@@ -8,12 +8,21 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Trophy, Play, RotateCcw, Star, Zap, AlertCircle, Clock as ClockIcon, Volume2, VolumeX, Pause } from 'lucide-react';
 
 type GameState = 'START' | 'PLAYING' | 'GAMEOVER';
+type Difficulty = 'EASY' | 'MEDIUM' | 'HARD';
 
 interface Problem {
   question: string;
   answer: number;
   options: number[];
 }
+
+const QUESTIONS_PER_GAME = 20;
+
+const DIFFICULTY_CONFIG = {
+  EASY: { label: 'Easy', color: '#6BCB77', multiplier: 1, startTime: 60 },
+  MEDIUM: { label: 'Medium', color: '#4D96FF', multiplier: 2, startTime: 90 },
+  HARD: { label: 'Hard', color: '#FF6B6B', multiplier: 5, startTime: 120 },
+};
 
 const SOUNDS = {
   CORRECT: 'https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3',
@@ -52,14 +61,15 @@ const Clock = ({ seconds }: { seconds: number }) => {
 
 export default function App() {
   const [gameState, setGameState] = useState<GameState>('START');
+  const [difficulty, setDifficulty] = useState<Difficulty>('EASY');
   const [score, setScore] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(120);
+  const [timeLeft, setTimeLeft] = useState(60);
   const [highScore, setHighScore] = useState(() => {
     const saved = localStorage.getItem('math-dash-highscore');
     return saved ? parseInt(saved, 10) : 0;
   });
-  const [level, setLevel] = useState(1);
   const [solvedCount, setSolvedCount] = useState(0);
+  const [timeBonus, setTimeBonus] = useState(0);
   const [currentProblem, setCurrentProblem] = useState<Problem | null>(null);
   const [feedback, setFeedback] = useState<'CORRECT' | 'WRONG' | null>(null);
   const [isMuted, setIsMuted] = useState(false);
@@ -84,38 +94,40 @@ export default function App() {
   // Game over check
   useEffect(() => {
     if (timeLeft <= 0 && gameState === 'PLAYING') {
-      endGame();
+      endGame(false);
     }
   }, [timeLeft, gameState]);
 
-  const generateProblem = useCallback((currentLevel: number): Problem => {
+  const generateProblem = useCallback((diff: Difficulty): Problem => {
     let a, b, op, answer;
-    const ops = ['+', '-', '*'];
     
-    // Difficulty scaling
-    if (currentLevel < 3) {
-      op = '+';
-      a = Math.floor(Math.random() * (10 * currentLevel)) + 1;
-      b = Math.floor(Math.random() * (10 * currentLevel)) + 1;
-    } else if (currentLevel < 6) {
-      op = Math.random() > 0.5 ? '+' : '-';
-      a = Math.floor(Math.random() * (20 * currentLevel)) + 5;
-      b = Math.floor(Math.random() * (15 * currentLevel)) + 1;
-      if (op === '-' && a < b) [a, b] = [b, a]; // Avoid negative results for kids
-    } else {
-      const randOp = Math.random();
-      if (randOp < 0.4) op = '+';
-      else if (randOp < 0.7) op = '-';
-      else op = '*';
-      
-      if (op === '*') {
-        a = Math.floor(Math.random() * 10) + 1;
-        b = Math.floor(Math.random() * (currentLevel)) + 1;
-      } else {
-        a = Math.floor(Math.random() * (50 * (currentLevel / 2))) + 10;
-        b = Math.floor(Math.random() * (50 * (currentLevel / 2))) + 10;
+    switch (diff) {
+      case 'EASY':
+        op = '+';
+        a = Math.floor(Math.random() * 9) + 1;
+        b = Math.floor(Math.random() * 9) + 1;
+        break;
+      case 'MEDIUM':
+        op = Math.random() > 0.5 ? '+' : '-';
+        a = Math.floor(Math.random() * 90) + 10;
+        b = Math.floor(Math.random() * 90) + 10;
         if (op === '-' && a < b) [a, b] = [b, a];
-      }
+        break;
+      case 'HARD':
+        const randOp = Math.random();
+        if (randOp < 0.33) op = '+';
+        else if (randOp < 0.66) op = '-';
+        else op = '*';
+        
+        if (op === '*') {
+          a = Math.floor(Math.random() * 10) + 2;
+          b = Math.floor(Math.random() * 50) + 10;
+        } else {
+          a = Math.floor(Math.random() * 900) + 100;
+          b = Math.floor(Math.random() * 900) + 100;
+          if (op === '-' && a < b) [a, b] = [b, a];
+        }
+        break;
     }
 
     switch (op) {
@@ -127,7 +139,8 @@ export default function App() {
 
     const options = [answer];
     while (options.length < 3) {
-      const distractor = answer + (Math.floor(Math.random() * 10) - 5);
+      const range = diff === 'HARD' ? 50 : 10;
+      const distractor = answer + (Math.floor(Math.random() * range) - (range / 2));
       if (distractor !== answer && distractor > 0 && !options.includes(distractor)) {
         options.push(distractor);
       }
@@ -140,53 +153,58 @@ export default function App() {
     };
   }, []);
 
-  const startGame = () => {
+  const startGame = (selectedDiff: Difficulty = 'EASY') => {
+    setDifficulty(selectedDiff);
     setScore(0);
-    setTimeLeft(120);
-    setLevel(1);
+    setTimeLeft(DIFFICULTY_CONFIG[selectedDiff].startTime);
     setSolvedCount(0);
+    setTimeBonus(0);
     setGameState('PLAYING');
     setIsPaused(false);
-    setCurrentProblem(generateProblem(1));
+    setCurrentProblem(generateProblem(selectedDiff));
     setFeedback(null);
   };
 
-  const endGame = () => {
+  const endGame = (completed: boolean) => {
+    let finalBonus = 0;
+    if (completed) {
+      finalBonus = Math.floor(timeLeft * 10 * DIFFICULTY_CONFIG[difficulty].multiplier);
+      setTimeBonus(finalBonus);
+      setScore(prev => prev + finalBonus);
+    }
     setGameState('GAMEOVER');
     playSound(SOUNDS.GAMEOVER);
     if (timerRef.current) clearInterval(timerRef.current);
   };
 
   const handleAnswer = (selected: number) => {
-    if (feedback) return;
+    if (feedback || isPaused) return;
 
     if (selected === currentProblem?.answer) {
       setFeedback('CORRECT');
       playSound(SOUNDS.CORRECT);
-      const bonus = 10 + level * 5;
-      setScore(prev => prev + bonus);
-      setTimeLeft(prev => prev + 5);
-      setSolvedCount(prev => {
-        const next = prev + 1;
-        if (next % 5 === 0) {
-          setLevel(l => l + 1);
-        }
-        return next;
-      });
+      const points = 10 * DIFFICULTY_CONFIG[difficulty].multiplier;
+      setScore(prev => prev + points);
+      
+      const nextSolvedCount = solvedCount + 1;
+      setSolvedCount(nextSolvedCount);
       
       setTimeout(() => {
-        setFeedback(null);
-        setCurrentProblem(generateProblem(level + (solvedCount % 5 === 4 ? 1 : 0)));
+        if (nextSolvedCount >= QUESTIONS_PER_GAME) {
+          endGame(true);
+        } else {
+          setFeedback(null);
+          setCurrentProblem(generateProblem(difficulty));
+        }
       }, 600);
     } else {
       setFeedback('WRONG');
       playSound(SOUNDS.WRONG);
-      const penalty = 20 + level * 5;
-      setScore(prev => Math.max(0, prev - penalty));
+      setTimeLeft(prev => Math.max(0, prev - 5));
       
       setTimeout(() => {
         setFeedback(null);
-        setCurrentProblem(generateProblem(level));
+        setCurrentProblem(generateProblem(difficulty));
       }, 800);
     }
   };
@@ -227,17 +245,23 @@ export default function App() {
               MATH<br/>DASH!
             </h1>
             <p className="text-xl mb-8 text-gray-700 font-semibold">
-              Solve fast! Every correct answer adds 5 seconds to your clock. How long can you survive?
+              Solve {QUESTIONS_PER_GAME} questions as fast as you can! Wrong answers cost 5 seconds.
             </p>
             <div className="flex flex-col gap-4">
-              <button
-                onClick={startGame}
-                className="group relative bg-[#6BCB77] hover:bg-[#5db868] text-white font-display text-3xl py-6 rounded-2xl border-4 border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-x-1 active:translate-y-1 transition-all flex items-center justify-center gap-3"
-              >
-                <Play className="w-8 h-8 fill-current" />
-                PLAY NOW
-              </button>
-              <div className="flex items-center justify-center gap-6">
+              <div className="grid grid-cols-1 gap-3">
+                {(Object.keys(DIFFICULTY_CONFIG) as Difficulty[]).map((diff) => (
+                  <button
+                    key={diff}
+                    onClick={() => startGame(diff)}
+                    style={{ backgroundColor: DIFFICULTY_CONFIG[diff].color }}
+                    className="group relative text-white font-display text-2xl py-4 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-x-1 active:translate-y-1 transition-all flex items-center justify-center gap-3"
+                  >
+                    <Play className="w-6 h-6 fill-current" />
+                    {DIFFICULTY_CONFIG[diff].label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center justify-center gap-6 mt-2">
                 {highScore > 0 && (
                   <div className="flex items-center justify-center gap-2 text-[#4D96FF] font-display text-xl">
                     <Trophy className="w-6 h-6" />
@@ -305,11 +329,11 @@ export default function App() {
                     {isPaused ? <Play className="w-5 h-5 fill-current" /> : <Pause className="w-5 h-5 fill-current" />}
                   </button>
                   <div className="bg-white px-4 py-2 rounded-xl border-4 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] font-display text-xs flex items-center">
-                    LVL {level}
+                    {solvedCount}/{QUESTIONS_PER_GAME}
                   </div>
                 </div>
                 <button
-                  onClick={endGame}
+                  onClick={() => endGame(false)}
                   className="bg-[#FF6B6B] px-4 py-2 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-[#ff5252] text-white font-display text-sm active:shadow-none active:translate-x-1 active:translate-y-1 transition-all"
                 >
                   STOP
@@ -406,19 +430,28 @@ export default function App() {
             </p>
             
             <div className="bg-gray-50 rounded-3xl p-6 border-4 border-black mb-8">
+              <div className="flex justify-between items-center mb-2">
+                <span className="font-display text-gray-400">BASE SCORE</span>
+                <span className="font-display text-2xl text-black">{score - timeBonus}</span>
+              </div>
+              <div className="flex justify-between items-center mb-4">
+                <span className="font-display text-gray-400">TIME BONUS</span>
+                <span className="font-display text-2xl text-[#6BCB77]">+{timeBonus}</span>
+              </div>
+              <div className="h-1 bg-black/10 mb-4" />
               <div className="flex justify-between items-center mb-4">
                 <span className="font-display text-gray-400">FINAL SCORE</span>
                 <span className="font-display text-4xl text-[#4D96FF]">{score}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="font-display text-gray-400">SOLVED</span>
-                <span className="font-display text-2xl text-[#6BCB77]">{solvedCount}</span>
+                <span className="font-display text-2xl text-[#6BCB77]">{solvedCount}/{QUESTIONS_PER_GAME}</span>
               </div>
             </div>
 
             <div className="flex flex-col gap-4">
               <button
-                onClick={startGame}
+                onClick={() => startGame(difficulty)}
                 className="bg-[#6BCB77] hover:bg-[#5db868] text-white font-display text-2xl py-5 rounded-2xl border-4 border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-x-1 active:translate-y-1 transition-all flex items-center justify-center gap-3"
               >
                 <RotateCcw className="w-6 h-6" />
