@@ -5,7 +5,8 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, Play, RotateCcw, Star, Zap, AlertCircle, Clock as ClockIcon, Volume2, VolumeX, Pause } from 'lucide-react';
+import { Trophy, Play, RotateCcw, Star, Zap, AlertCircle, Volume2, VolumeX, Pause, CheckCircle2 } from 'lucide-react';
+import confetti from 'canvas-confetti';
 
 type GameState = 'START' | 'PLAYING' | 'GAMEOVER';
 type Difficulty = 'EASY' | 'MEDIUM' | 'HARD';
@@ -19,42 +20,53 @@ interface Problem {
 const QUESTIONS_PER_GAME = 20;
 
 const DIFFICULTY_CONFIG = {
-  EASY: { label: 'Easy', color: '#6BCB77', multiplier: 1, startTime: 60 },
-  MEDIUM: { label: 'Medium', color: '#4D96FF', multiplier: 2, startTime: 90 },
-  HARD: { label: 'Hard', color: '#FF6B6B', multiplier: 5, startTime: 120 },
+  EASY: { label: 'Easy', color: '#6BCB77', multiplier: 1 },
+  MEDIUM: { label: 'Medium', color: '#4D96FF', multiplier: 2 },
+  HARD: { label: 'Hard', color: '#FF6B6B', multiplier: 5 },
 };
+
+const START_TIME = 30;
 
 const SOUNDS = {
   CORRECT: 'https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3',
   WRONG: 'https://assets.mixkit.co/active_storage/sfx/2013/2013-preview.mp3',
   GAMEOVER: 'https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3',
+  BGM: 'https://assets.mixkit.co/active_storage/sfx/123/123-preview.mp3', // Placeholder, will find a better one or use a generic jazzy loop
 };
 
-const Clock = ({ seconds }: { seconds: number }) => {
-  const rotation = (seconds % 60) * 6; // 360 / 60 = 6 degrees per second
+const FuseProgressBar = ({ current, total }: { current: number; total: number }) => {
+  const percentage = (current / total) * 100;
+  
   return (
-    <div className="relative w-24 h-24 bg-white rounded-full border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex items-center justify-center overflow-hidden">
-      {/* Clock Face */}
-      <div className="absolute inset-1 border-2 border-gray-100 rounded-full" />
-      {/* Hour Markers (dots) */}
-      {[...Array(12)].map((_, i) => (
-        <div
-          key={i}
-          className="absolute w-1 h-1 bg-gray-300 rounded-full"
-          style={{
-            transform: `rotate(${i * 30}deg) translateY(-36px)`,
-          }}
-        />
-      ))}
-      {/* Hand */}
-      <motion.div
-        className="absolute w-1 h-10 bg-[#FF6B6B] rounded-full origin-bottom"
-        style={{ bottom: '50%' }}
-        animate={{ rotate: rotation }}
-        transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+    <div className="w-full max-w-md h-8 bg-gray-200 rounded-full border-4 border-black relative overflow-visible shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+      {/* The Fuse Line */}
+      <motion.div 
+        className="h-full bg-[#8B4513] rounded-full origin-left"
+        initial={{ width: '100%' }}
+        animate={{ width: `${percentage}%` }}
+        transition={{ duration: 0.5 }}
       />
-      {/* Center Dot */}
-      <div className="absolute w-2 h-2 bg-black rounded-full z-10" />
+      
+      {/* The Spark/Flame */}
+      <motion.div 
+        className="absolute top-1/2 -translate-y-1/2 z-10"
+        animate={{ 
+          left: `${percentage}%`,
+          scale: [1, 1.2, 1],
+          rotate: [0, 10, -10, 0]
+        }}
+        transition={{ 
+          left: { duration: 0.5 },
+          scale: { repeat: Infinity, duration: 0.2 },
+          rotate: { repeat: Infinity, duration: 0.3 }
+        }}
+        style={{ marginLeft: '-12px' }}
+      >
+        <div className="relative">
+          <Zap className="w-8 h-8 text-[#FFD93D] fill-current drop-shadow-[0_0_8px_rgba(255,217,61,0.8)]" />
+          <div className="absolute top-0 left-0 w-8 h-8 bg-[#FF6B6B] rounded-full blur-md opacity-50 animate-pulse" />
+        </div>
+      </motion.div>
     </div>
   );
 };
@@ -63,19 +75,48 @@ export default function App() {
   const [gameState, setGameState] = useState<GameState>('START');
   const [difficulty, setDifficulty] = useState<Difficulty>('EASY');
   const [score, setScore] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(60);
+  const [timeLeft, setTimeLeft] = useState(START_TIME);
   const [highScore, setHighScore] = useState(() => {
     const saved = localStorage.getItem('math-dash-highscore');
     return saved ? parseInt(saved, 10) : 0;
   });
-  const [solvedCount, setSolvedCount] = useState(0);
-  const [timeBonus, setTimeBonus] = useState(0);
+  const [level, setLevel] = useState(1);
+  const [solvedInLevel, setSolvedInLevel] = useState(0);
+  const [totalSolved, setTotalSolved] = useState(0);
+  const [showLevelComplete, setShowLevelComplete] = useState(false);
   const [currentProblem, setCurrentProblem] = useState<Problem | null>(null);
   const [feedback, setFeedback] = useState<'CORRECT' | 'WRONG' | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const bgmRef = useRef<HTMLAudioElement | null>(null);
+
+  const getQuestionsForLevel = (lvl: number) => {
+    return 3 + (lvl - 1) * 2;
+  };
+
+  // Background Music Control
+  useEffect(() => {
+    if (!bgmRef.current) {
+      // Using a royalty-free jazzy loop
+      bgmRef.current = new Audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3');
+      bgmRef.current.loop = true;
+      bgmRef.current.volume = 0.3;
+    }
+
+    const bgm = bgmRef.current;
+
+    if (gameState === 'PLAYING' && !isPaused && !isMuted && !showLevelComplete) {
+      bgm.play().catch(e => console.log('BGM play blocked:', e));
+    } else {
+      bgm.pause();
+    }
+
+    return () => {
+      bgm.pause();
+    };
+  }, [gameState, isPaused, isMuted, showLevelComplete]);
 
   const playSound = useCallback((url: string) => {
     if (isMuted) return;
@@ -93,10 +134,10 @@ export default function App() {
 
   // Game over check
   useEffect(() => {
-    if (timeLeft <= 0 && gameState === 'PLAYING') {
-      endGame(false);
+    if (timeLeft <= 0 && gameState === 'PLAYING' && !showLevelComplete) {
+      endGame();
     }
-  }, [timeLeft, gameState]);
+  }, [timeLeft, gameState, showLevelComplete]);
 
   const generateProblem = useCallback((diff: Difficulty): Problem => {
     let a, b, op, answer;
@@ -156,29 +197,35 @@ export default function App() {
   const startGame = (selectedDiff: Difficulty = 'EASY') => {
     setDifficulty(selectedDiff);
     setScore(0);
-    setTimeLeft(DIFFICULTY_CONFIG[selectedDiff].startTime);
-    setSolvedCount(0);
-    setTimeBonus(0);
+    setTimeLeft(START_TIME);
+    setSolvedInLevel(0);
+    setTotalSolved(0);
+    setLevel(1);
+    setShowLevelComplete(false);
     setGameState('PLAYING');
     setIsPaused(false);
     setCurrentProblem(generateProblem(selectedDiff));
     setFeedback(null);
   };
 
-  const endGame = (completed: boolean) => {
-    let finalBonus = 0;
-    if (completed) {
-      finalBonus = Math.floor(timeLeft * 10 * DIFFICULTY_CONFIG[difficulty].multiplier);
-      setTimeBonus(finalBonus);
-      setScore(prev => prev + finalBonus);
-    }
+  const endGame = () => {
     setGameState('GAMEOVER');
     playSound(SOUNDS.GAMEOVER);
     if (timerRef.current) clearInterval(timerRef.current);
   };
 
+  const startNextLevel = () => {
+    const nextLevel = level + 1;
+    setLevel(nextLevel);
+    setSolvedInLevel(0);
+    setTimeLeft(START_TIME);
+    setShowLevelComplete(false);
+    setCurrentProblem(generateProblem(difficulty));
+    setFeedback(null);
+  };
+
   const handleAnswer = (selected: number) => {
-    if (feedback || isPaused) return;
+    if (feedback || isPaused || showLevelComplete) return;
 
     if (selected === currentProblem?.answer) {
       setFeedback('CORRECT');
@@ -186,12 +233,19 @@ export default function App() {
       const points = 10 * DIFFICULTY_CONFIG[difficulty].multiplier;
       setScore(prev => prev + points);
       
-      const nextSolvedCount = solvedCount + 1;
-      setSolvedCount(nextSolvedCount);
+      const nextSolvedInLevel = solvedInLevel + 1;
+      setSolvedInLevel(nextSolvedInLevel);
+      setTotalSolved(prev => prev + 1);
       
       setTimeout(() => {
-        if (nextSolvedCount >= QUESTIONS_PER_GAME) {
-          endGame(true);
+        if (nextSolvedInLevel >= getQuestionsForLevel(level)) {
+          setShowLevelComplete(true);
+          confetti({
+            particleCount: 150,
+            spread: 70,
+            origin: { y: 0.6 },
+            colors: ['#FF6B6B', '#4D96FF', '#6BCB77', '#FFD93D']
+          });
         } else {
           setFeedback(null);
           setCurrentProblem(generateProblem(difficulty));
@@ -211,7 +265,7 @@ export default function App() {
 
   // Countdown timer
   useEffect(() => {
-    if (gameState === 'PLAYING' && !isPaused) {
+    if (gameState === 'PLAYING' && !isPaused && !showLevelComplete) {
       timerRef.current = setInterval(() => {
         setTimeLeft(prev => Math.max(0, prev - 1));
       }, 1000);
@@ -221,7 +275,7 @@ export default function App() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [gameState, isPaused]);
+  }, [gameState, isPaused, showLevelComplete]);
 
   return (
     <div className="min-h-screen bg-[#FFD93D] flex flex-col items-center justify-center p-4 select-none">
@@ -245,7 +299,7 @@ export default function App() {
               MATH<br/>DASH!
             </h1>
             <p className="text-xl mb-8 text-gray-700 font-semibold">
-              Solve {QUESTIONS_PER_GAME} questions as fast as you can! Wrong answers cost 5 seconds.
+              Survive the levels! Level 1 starts with 3 questions. The fuse is burning!
             </p>
             <div className="flex flex-col gap-4">
               <div className="grid grid-cols-1 gap-3">
@@ -287,28 +341,45 @@ export default function App() {
             className="w-full max-w-2xl relative z-10"
           >
             {/* HUD */}
-            <div className="flex justify-between items-center mb-8 gap-4">
-              <div className="bg-white px-6 py-3 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                <div className="text-xs font-display text-gray-400 uppercase tracking-widest">Score</div>
-                <motion.div 
-                  key={score}
-                  initial={{ scale: 1.2, color: '#4D96FF' }}
-                  animate={{ scale: 1, color: '#4D96FF' }}
-                  className="text-4xl font-display tabular-nums"
-                >
-                  {score}
-                </motion.div>
+            <div className="flex flex-col gap-6 mb-8">
+              <div className="flex justify-between items-center gap-4">
+                <div className="bg-white px-6 py-3 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                  <div className="text-xs font-display text-gray-400 uppercase tracking-widest">Score</div>
+                  <motion.div 
+                    key={score}
+                    initial={{ scale: 1.2, color: '#4D96FF' }}
+                    animate={{ scale: 1, color: '#4D96FF' }}
+                    className="text-4xl font-display tabular-nums"
+                  >
+                    {score}
+                  </motion.div>
+                </div>
+
+                <div className="flex flex-col items-end gap-2">
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setIsPaused(!isPaused)}
+                      className="bg-white p-2 rounded-xl border-4 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:bg-gray-50 active:shadow-none active:translate-x-1 active:translate-y-1 transition-all"
+                    >
+                      {isPaused ? <Play className="w-5 h-5 fill-current" /> : <Pause className="w-5 h-5 fill-current" />}
+                    </button>
+                    <div className="bg-white px-4 py-2 rounded-xl border-4 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] font-display text-xs flex items-center">
+                      LVL {level}: {solvedInLevel}/{getQuestionsForLevel(level)}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => endGame()}
+                    className="bg-[#FF6B6B] px-4 py-2 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-[#ff5252] text-white font-display text-sm active:shadow-none active:translate-x-1 active:translate-y-1 transition-all"
+                  >
+                    STOP
+                  </button>
+                </div>
               </div>
-              
-              <div className="flex flex-col items-center">
-                <motion.div
-                  animate={timeLeft <= 10 ? { scale: [1, 1.1, 1] } : {}}
-                  transition={{ duration: 0.5, repeat: Infinity }}
-                >
-                  <Clock seconds={timeLeft} />
-                </motion.div>
-                <div className={`mt-2 px-4 py-1 rounded-full border-2 border-black font-display text-sm shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] ${
-                  timeLeft <= 10 ? 'bg-[#FF6B6B] text-white animate-pulse' : 'bg-[#FFD93D] text-black'
+
+              <div className="flex flex-col items-center gap-2">
+                <FuseProgressBar current={timeLeft} total={START_TIME} />
+                <div className={`px-4 py-1 rounded-full border-2 border-black font-display text-sm shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] ${
+                  timeLeft <= 5 ? 'bg-[#FF6B6B] text-white animate-pulse' : 'bg-[#FFD93D] text-black'
                 }`}>
                   <motion.span
                     key={timeLeft}
@@ -319,32 +390,29 @@ export default function App() {
                   </motion.span>
                 </div>
               </div>
-
-              <div className="flex flex-col items-end gap-2">
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setIsPaused(!isPaused)}
-                    className="bg-white p-2 rounded-xl border-4 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:bg-gray-50 active:shadow-none active:translate-x-1 active:translate-y-1 transition-all"
-                  >
-                    {isPaused ? <Play className="w-5 h-5 fill-current" /> : <Pause className="w-5 h-5 fill-current" />}
-                  </button>
-                  <div className="bg-white px-4 py-2 rounded-xl border-4 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] font-display text-xs flex items-center">
-                    {solvedCount}/{QUESTIONS_PER_GAME}
-                  </div>
-                </div>
-                <button
-                  onClick={() => endGame(false)}
-                  className="bg-[#FF6B6B] px-4 py-2 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-[#ff5252] text-white font-display text-sm active:shadow-none active:translate-x-1 active:translate-y-1 transition-all"
-                >
-                  STOP
-                </button>
-              </div>
             </div>
 
             {/* Problem Card */}
-            <div className="bg-white rounded-[40px] border-4 border-black shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] p-12 mb-8 text-center relative overflow-hidden">
+            <div className="bg-white rounded-[40px] border-4 border-black shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] p-12 mb-8 text-center relative overflow-hidden min-h-[300px] flex flex-col items-center justify-center">
               <AnimatePresence mode="wait">
-                {!isPaused ? (
+                {showLevelComplete ? (
+                  <motion.div
+                    key="level-complete"
+                    initial={{ scale: 0.5, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 1.5, opacity: 0 }}
+                    className="flex flex-col items-center gap-4"
+                  >
+                    <CheckCircle2 className="w-20 h-20 text-[#6BCB77]" />
+                    <h2 className="text-4xl font-display text-black">LEVEL {level} COMPLETE!</h2>
+                    <button
+                      onClick={startNextLevel}
+                      className="bg-[#6BCB77] hover:bg-[#5db868] text-white font-display text-2xl px-8 py-4 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-x-1 active:translate-y-1 transition-all"
+                    >
+                      NEXT LEVEL
+                    </button>
+                  </motion.div>
+                ) : !isPaused ? (
                   <motion.div
                     key={currentProblem?.question}
                     initial={{ y: 20, opacity: 0, scale: 0.9 }}
@@ -368,7 +436,7 @@ export default function App() {
                 )}
               </AnimatePresence>
               
-              {!isPaused && (
+              {!isPaused && !showLevelComplete && (
                 <div className="text-2xl font-semibold text-gray-400 font-display">
                   = ?
                 </div>
@@ -376,7 +444,7 @@ export default function App() {
 
               {/* Feedback Overlay */}
               <AnimatePresence>
-                {feedback && !isPaused && (
+                {feedback && !isPaused && !showLevelComplete && (
                   <motion.div
                     initial={{ scale: 0, rotate: -20, opacity: 0 }}
                     animate={{ scale: 1.2, rotate: 0, opacity: 1 }}
@@ -398,14 +466,14 @@ export default function App() {
               {currentProblem?.options.map((option, idx) => (
                 <motion.button
                   key={`${currentProblem.question}-${option}-${idx}`}
-                  whileHover={!isPaused ? { scale: 1.05, y: -5 } : {}}
-                  whileTap={!isPaused ? { scale: 0.95 } : {}}
+                  whileHover={!isPaused && !showLevelComplete ? { scale: 1.05, y: -5 } : {}}
+                  whileTap={!isPaused && !showLevelComplete ? { scale: 0.95 } : {}}
                   onClick={() => handleAnswer(option)}
-                  disabled={!!feedback || isPaused}
+                  disabled={!!feedback || isPaused || showLevelComplete}
                   className={`bg-white py-6 rounded-3xl border-4 border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] text-4xl font-display transition-all hover:bg-gray-50 disabled:opacity-50 ${
                     feedback === 'CORRECT' && option === currentProblem.answer ? 'bg-[#6BCB77] text-white' : 
                     feedback === 'WRONG' && option !== currentProblem.answer ? 'bg-gray-100' : ''
-                  } ${isPaused ? 'cursor-not-allowed grayscale' : ''}`}
+                  } ${(isPaused || showLevelComplete) ? 'cursor-not-allowed grayscale' : ''}`}
                 >
                   {option}
                 </motion.button>
@@ -430,22 +498,17 @@ export default function App() {
             </p>
             
             <div className="bg-gray-50 rounded-3xl p-6 border-4 border-black mb-8">
-              <div className="flex justify-between items-center mb-2">
-                <span className="font-display text-gray-400">BASE SCORE</span>
-                <span className="font-display text-2xl text-black">{score - timeBonus}</span>
-              </div>
-              <div className="flex justify-between items-center mb-4">
-                <span className="font-display text-gray-400">TIME BONUS</span>
-                <span className="font-display text-2xl text-[#6BCB77]">+{timeBonus}</span>
-              </div>
-              <div className="h-1 bg-black/10 mb-4" />
               <div className="flex justify-between items-center mb-4">
                 <span className="font-display text-gray-400">FINAL SCORE</span>
                 <span className="font-display text-4xl text-[#4D96FF]">{score}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="font-display text-gray-400">SOLVED</span>
-                <span className="font-display text-2xl text-[#6BCB77]">{solvedCount}/{QUESTIONS_PER_GAME}</span>
+                <span className="font-display text-gray-400">TOTAL SOLVED</span>
+                <span className="font-display text-2xl text-[#6BCB77]">{totalSolved}</span>
+              </div>
+              <div className="flex justify-between items-center mt-2">
+                <span className="font-display text-gray-400">REACHED LEVEL</span>
+                <span className="font-display text-2xl text-[#FF6B6B]">{level}</span>
               </div>
             </div>
 
