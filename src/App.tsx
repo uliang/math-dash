@@ -17,7 +17,7 @@ interface Problem {
   options: number[];
 }
 
-const QUESTIONS_PER_GAME = 20;
+const QUESTIONS_PER_LEVEL = 5;
 
 const DIFFICULTY_CONFIG = {
   EASY: { label: 'Easy', color: '#6BCB77', multiplier: 1 },
@@ -25,13 +25,14 @@ const DIFFICULTY_CONFIG = {
   HARD: { label: 'Hard', color: '#FF6B6B', multiplier: 5 },
 };
 
-const START_TIME = 30;
+const BASE_START_TIME = 30;
 
 const SOUNDS = {
   CORRECT: 'https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3',
   WRONG: 'https://assets.mixkit.co/active_storage/sfx/2013/2013-preview.mp3',
   GAMEOVER: 'https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3',
-  BGM: 'https://assets.mixkit.co/active_storage/sfx/123/123-preview.mp3', // Placeholder, will find a better one or use a generic jazzy loop
+  BOOM: 'https://assets.mixkit.co/active_storage/sfx/1435/1435-preview.mp3',
+  BGM: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
 };
 
 const FuseProgressBar = ({ current, total }: { current: number; total: number }) => {
@@ -75,9 +76,10 @@ export default function App() {
   const [gameState, setGameState] = useState<GameState>('START');
   const [difficulty, setDifficulty] = useState<Difficulty>('EASY');
   const [score, setScore] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(START_TIME);
+  const [timeLeft, setTimeLeft] = useState(BASE_START_TIME);
+  const [maxTime, setMaxTime] = useState(BASE_START_TIME);
   const [highScore, setHighScore] = useState(() => {
-    const saved = localStorage.getItem('math-dash-highscore');
+    const saved = localStorage.getItem('math-boom-highscore');
     return saved ? parseInt(saved, 10) : 0;
   });
   const [level, setLevel] = useState(1);
@@ -92,8 +94,9 @@ export default function App() {
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const bgmRef = useRef<HTMLAudioElement | null>(null);
 
-  const getQuestionsForLevel = (lvl: number) => {
-    return 3 + (lvl - 1) * 2;
+  const getStartTimeForLevel = (lvl: number) => {
+    // Fuse burns faster as level increases
+    return Math.max(8, BASE_START_TIME - (lvl - 1) * 2);
   };
 
   // Background Music Control
@@ -128,14 +131,14 @@ export default function App() {
   useEffect(() => {
     if (score > highScore) {
       setHighScore(score);
-      localStorage.setItem('math-dash-highscore', score.toString());
+      localStorage.setItem('math-boom-highscore', score.toString());
     }
   }, [score, highScore]);
 
   // Game over check
   useEffect(() => {
     if (timeLeft <= 0 && gameState === 'PLAYING' && !showLevelComplete) {
-      endGame();
+      endGame(true); // True means it was a boom
     }
   }, [timeLeft, gameState, showLevelComplete]);
 
@@ -150,8 +153,9 @@ export default function App() {
         break;
       case 'MEDIUM':
         op = Math.random() > 0.5 ? '+' : '-';
-        a = Math.floor(Math.random() * 90) + 10;
-        b = Math.floor(Math.random() * 90) + 10;
+        // Single and double digit numbers
+        a = Math.floor(Math.random() * 99) + 1;
+        b = Math.floor(Math.random() * 99) + 1;
         if (op === '-' && a < b) [a, b] = [b, a];
         break;
       case 'HARD':
@@ -160,14 +164,15 @@ export default function App() {
         else if (randOp < 0.66) op = '-';
         else op = '*';
         
-        if (op === '*') {
-          a = Math.floor(Math.random() * 10) + 2;
-          b = Math.floor(Math.random() * 50) + 10;
-        } else {
-          a = Math.floor(Math.random() * 900) + 100;
-          b = Math.floor(Math.random() * 900) + 100;
-          if (op === '-' && a < b) [a, b] = [b, a];
+        // Double digit numbers
+        a = Math.floor(Math.random() * 90) + 10;
+        b = Math.floor(Math.random() * 90) + 10;
+        if (op === '*' && (a > 20 || b > 20)) {
+          // Keep multiplication slightly manageable but still double digits
+          a = Math.floor(Math.random() * 15) + 10;
+          b = Math.floor(Math.random() * 15) + 10;
         }
+        if (op === '-' && a < b) [a, b] = [b, a];
         break;
     }
 
@@ -180,7 +185,7 @@ export default function App() {
 
     const options = [answer];
     while (options.length < 3) {
-      const range = diff === 'HARD' ? 50 : 10;
+      const range = diff === 'HARD' ? 100 : 20;
       const distractor = answer + (Math.floor(Math.random() * range) - (range / 2));
       if (distractor !== answer && distractor > 0 && !options.includes(distractor)) {
         options.push(distractor);
@@ -197,7 +202,9 @@ export default function App() {
   const startGame = (selectedDiff: Difficulty = 'EASY') => {
     setDifficulty(selectedDiff);
     setScore(0);
-    setTimeLeft(START_TIME);
+    const initialTime = getStartTimeForLevel(1);
+    setTimeLeft(initialTime);
+    setMaxTime(initialTime);
     setSolvedInLevel(0);
     setTotalSolved(0);
     setLevel(1);
@@ -208,9 +215,13 @@ export default function App() {
     setFeedback(null);
   };
 
-  const endGame = () => {
+  const endGame = (isBoom: boolean = false) => {
     setGameState('GAMEOVER');
-    playSound(SOUNDS.GAMEOVER);
+    if (isBoom) {
+      playSound(SOUNDS.BOOM);
+    } else {
+      playSound(SOUNDS.GAMEOVER);
+    }
     if (timerRef.current) clearInterval(timerRef.current);
   };
 
@@ -218,13 +229,15 @@ export default function App() {
     const nextLevel = level + 1;
     setLevel(nextLevel);
     setSolvedInLevel(0);
-    setTimeLeft(START_TIME);
+    const nextTime = getStartTimeForLevel(nextLevel);
+    setTimeLeft(nextTime);
+    setMaxTime(nextTime);
     setShowLevelComplete(false);
     setCurrentProblem(generateProblem(difficulty));
     setFeedback(null);
   };
 
-  const handleAnswer = (selected: number) => {
+  const handleAnswer = useCallback((selected: number) => {
     if (feedback || isPaused || showLevelComplete) return;
 
     if (selected === currentProblem?.answer) {
@@ -238,7 +251,7 @@ export default function App() {
       setTotalSolved(prev => prev + 1);
       
       setTimeout(() => {
-        if (nextSolvedInLevel >= getQuestionsForLevel(level)) {
+        if (nextSolvedInLevel >= QUESTIONS_PER_LEVEL) {
           setShowLevelComplete(true);
           confetti({
             particleCount: 150,
@@ -261,7 +274,25 @@ export default function App() {
         setCurrentProblem(generateProblem(difficulty));
       }, 800);
     }
-  };
+  }, [feedback, isPaused, showLevelComplete, currentProblem, difficulty, solvedInLevel, playSound, generateProblem]);
+
+  // Keyboard Controls
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (gameState !== 'PLAYING' || isPaused || showLevelComplete || feedback) return;
+      
+      if (currentProblem && ['1', '2', '3'].includes(e.key)) {
+        const index = parseInt(e.key, 10) - 1;
+        const option = currentProblem.options[index];
+        if (option !== undefined) {
+          handleAnswer(option);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [gameState, isPaused, showLevelComplete, feedback, currentProblem, handleAnswer]);
 
   // Countdown timer
   useEffect(() => {
@@ -296,10 +327,10 @@ export default function App() {
             className="bg-white p-8 rounded-[40px] shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] border-4 border-black text-center max-w-md w-full relative z-10"
           >
             <h1 className="text-6xl font-display mb-4 text-[#FF6B6B] drop-shadow-lg leading-tight">
-              MATH<br/>DASH!
+              MATH<br/>BOOM!
             </h1>
             <p className="text-xl mb-8 text-gray-700 font-semibold">
-              Survive the levels! Level 1 starts with 3 questions. The fuse is burning!
+              Survive the levels! Each level has {QUESTIONS_PER_LEVEL} questions. The fuse burns faster every level!
             </p>
             <div className="flex flex-col gap-4">
               <div className="grid grid-cols-1 gap-3">
@@ -364,11 +395,11 @@ export default function App() {
                       {isPaused ? <Play className="w-5 h-5 fill-current" /> : <Pause className="w-5 h-5 fill-current" />}
                     </button>
                     <div className="bg-white px-4 py-2 rounded-xl border-4 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] font-display text-xs flex items-center">
-                      LVL {level}: {solvedInLevel}/{getQuestionsForLevel(level)}
+                      LVL {level}: {solvedInLevel}/{QUESTIONS_PER_LEVEL}
                     </div>
                   </div>
                   <button
-                    onClick={() => endGame()}
+                    onClick={() => endGame(false)}
                     className="bg-[#FF6B6B] px-4 py-2 rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-[#ff5252] text-white font-display text-sm active:shadow-none active:translate-x-1 active:translate-y-1 transition-all"
                   >
                     STOP
@@ -377,7 +408,7 @@ export default function App() {
               </div>
 
               <div className="flex flex-col items-center gap-2">
-                <FuseProgressBar current={timeLeft} total={START_TIME} />
+                <FuseProgressBar current={timeLeft} total={maxTime} />
                 <div className={`px-4 py-1 rounded-full border-2 border-black font-display text-sm shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] ${
                   timeLeft <= 5 ? 'bg-[#FF6B6B] text-white animate-pulse' : 'bg-[#FFD93D] text-black'
                 }`}>
@@ -470,11 +501,14 @@ export default function App() {
                   whileTap={!isPaused && !showLevelComplete ? { scale: 0.95 } : {}}
                   onClick={() => handleAnswer(option)}
                   disabled={!!feedback || isPaused || showLevelComplete}
-                  className={`bg-white py-6 rounded-3xl border-4 border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] text-4xl font-display transition-all hover:bg-gray-50 disabled:opacity-50 ${
+                  className={`bg-white py-6 rounded-3xl border-4 border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] text-4xl font-display transition-all hover:bg-gray-50 disabled:opacity-50 relative ${
                     feedback === 'CORRECT' && option === currentProblem.answer ? 'bg-[#6BCB77] text-white' : 
                     feedback === 'WRONG' && option !== currentProblem.answer ? 'bg-gray-100' : ''
                   } ${(isPaused || showLevelComplete) ? 'cursor-not-allowed grayscale' : ''}`}
                 >
+                  <span className="absolute top-2 left-3 text-xs text-gray-400 font-display opacity-50">
+                    {idx + 1}
+                  </span>
                   {option}
                 </motion.button>
               ))}
@@ -489,12 +523,21 @@ export default function App() {
             animate={{ scale: 1, opacity: 1 }}
             className="bg-white p-10 rounded-[40px] shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] border-4 border-black text-center max-w-md w-full relative z-10"
           >
-            <div className="mb-6 inline-block p-4 bg-[#FF6B6B] rounded-full border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-              <AlertCircle className="w-12 h-12 text-white" />
+            <div className="mb-6 relative inline-block">
+              <div className="p-4 bg-[#FF6B6B] rounded-full border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] relative z-10">
+                <AlertCircle className="w-12 h-12 text-white" />
+              </div>
+              <motion.img 
+                initial={{ scale: 0, opacity: 0 }}
+                animate={{ scale: 2, opacity: 1 }}
+                src="https://picsum.photos/seed/explosion/200/200"
+                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-32 h-32 rounded-full object-cover border-4 border-black z-0"
+                referrerPolicy="no-referrer"
+              />
             </div>
-            <h2 className="text-5xl font-display mb-2 text-black">TIME'S UP!</h2>
+            <h2 className="text-5xl font-display mb-2 text-black mt-8">BOOM!</h2>
             <p className="text-xl text-gray-500 font-semibold mb-8">
-              Great effort!
+              The fuse ran out!
             </p>
             
             <div className="bg-gray-50 rounded-3xl p-6 border-4 border-black mb-8">
